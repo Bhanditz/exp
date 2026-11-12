@@ -9,7 +9,6 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"os/user"
@@ -29,12 +28,12 @@ var debugDarwinRoots = true
 //
 // The strategy is as follows:
 //
-// 1. Run "security find-certificate" to dump the list of system root
-//    CAs in PEM format.
+//  1. Run "security find-certificate" to dump the list of system root
+//     CAs in PEM format.
 //
-// 2. For each dumped cert, conditionally verify it with "security
-//    verify-cert" if that cert was not in the SystemRootCertificates
-//    keychain, which can't have custom trust policies.
+//  2. For each dumped cert, conditionally verify it with "security
+//     verify-cert" if that cert was not in the SystemRootCertificates
+//     keychain, which can't have custom trust policies.
 //
 // We need to run "verify-cert" for all certificates not in SystemRootCertificates
 // because there might be certificates in the keychains without a corresponding
@@ -142,7 +141,7 @@ func verifyCertWithSystem(cert *x509.Certificate) bool {
 		Type: "CERTIFICATE", Bytes: cert.Raw,
 	})
 
-	f, err := ioutil.TempFile("", "cert")
+	f, err := os.CreateTemp("", "cert")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "can't create temporary file for cert: %v", err)
 		return false

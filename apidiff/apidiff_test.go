@@ -2,62 +2,153 @@ package apidiff
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"go/ast"
+	"go/importer"
+	"go/parser"
+	"go/token"
 	"go/types"
-	"io/ioutil"
+	"go/version"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"golang.org/x/tools/go/packages"
+	"golang.org/x/tools/go/packages/packagestest"
 )
 
-func TestChanges(t *testing.T) {
-	dir, err := ioutil.TempDir("", "apidiff_test")
+// The version to write into the go.mod file used to load the packages being tested.
+const testGoVersion = "1.22"
+
+func TestModuleChanges(t *testing.T) {
+	packagestest.TestAll(t, testModuleChanges)
+}
+
+func testModuleChanges(t *testing.T, x packagestest.Exporter) {
+	e := packagestest.Export(t, x, []packagestest.Module{
+		{
+			Name: "example.com/moda",
+			Files: map[string]any{
+				"foo/foo.go":     "package foo\n\nconst Version = 1",
+				"foo/baz/baz.go": "package baz",
+			},
+		},
+		{
+			Name: "example.com/modb",
+			Files: map[string]any{
+				"foo/foo.go": "package foo\n\nconst Version = 2\nconst Other = 1",
+				"bar/bar.go": "package bar",
+			},
+		},
+	})
+	defer e.Cleanup()
+
+	a, err := loadModule(t, e.Config, "example.com/moda")
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir = filepath.Join(dir, "go")
-	wanti, wantc := splitIntoPackages(t, dir)
-	defer os.RemoveAll(dir)
+	b, err := loadModule(t, e.Config, "example.com/modb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := ModuleChanges(a, b)
+	if len(report.Changes) == 0 {
+		t.Fatal("expected some changes, but got none")
+	}
+	wanti := []string{
+		"./foo.Version: value changed from 1 to 2",
+		"package example.com/moda/foo/baz: removed",
+	}
 	sort.Strings(wanti)
+
+	got := report.messages(false)
+	sort.Strings(got)
+
+	if diff := cmp.Diff(wanti, got); diff != "" {
+		t.Errorf("incompatibles: mismatch (-want, +got)\n%s", diff)
+	}
+
+	wantc := []string{
+		"./foo.Other: added",
+		"package example.com/modb/bar: added",
+	}
 	sort.Strings(wantc)
 
-	oldpkg, err := load("old", dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	newpkg, err := load("new", dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	got = report.messages(true)
+	sort.Strings(got)
 
-	report := Changes(oldpkg.Types, newpkg.Types)
-
-	if !reflect.DeepEqual(report.Incompatible, wanti) {
-		t.Errorf("incompatibles: got %v\nwant %v\n", report.Incompatible, wanti)
-	}
-	if !reflect.DeepEqual(report.Compatible, wantc) {
-		t.Errorf("compatibles: got %v\nwant %v\n", report.Compatible, wantc)
+	if diff := cmp.Diff(wantc, got); diff != "" {
+		t.Errorf("compatibles: mismatch (-want, +got)\n%s", diff)
 	}
 }
 
-func splitIntoPackages(t *testing.T, dir string) (incompatibles, compatibles []string) {
+func TestChanges(t *testing.T) {
+	testfiles, err := filepath.Glob(filepath.Join("testdata", "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, testfile := range testfiles {
+		name := strings.TrimSuffix(filepath.Base(testfile), ".go")
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "go")
+			wanti, wantc := splitIntoPackages(t, testfile, dir)
+			sort.Strings(wanti)
+			sort.Strings(wantc)
+
+			oldpkg, err := loadPackage(t, "apidiff/old", dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			newpkg, err := loadPackage(t, "apidiff/new", dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			report := Changes(oldpkg.Types, newpkg.Types)
+
+			got := report.messages(false)
+			if diff := cmp.Diff(wanti, got); diff != "" {
+				t.Errorf("incompatibles: mismatch (-want, +got)\n%s", diff)
+			}
+			got = report.messages(true)
+			if diff := cmp.Diff(wantc, got); diff != "" {
+				t.Errorf("compatibles: mismatch (-want, +got)\n%s", diff)
+			}
+		})
+	}
+}
+
+func splitIntoPackages(t *testing.T, file, dir string) (incompatibles, compatibles []string) {
 	// Read the input file line by line.
 	// Write a line into the old or new package,
 	// dependent on comments.
 	// Also collect expected messages.
-	f, err := os.Open("testdata/tests.go")
+	f, err := os.Open(file)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer f.Close()
 
-	oldd := filepath.Join(dir, "src/old")
-	newd := filepath.Join(dir, "src/new")
+	if err := os.MkdirAll(filepath.Join(dir, "src", "apidiff"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	goVer := testGoVersion
+	if version.Compare(runtime.Version(), "go1.27") >= 0 {
+		goVer = "1.27"
+	}
+	goMod := fmt.Sprintf("module apidiff\ngo %s\n", goVer)
+	if err := os.WriteFile(filepath.Join(dir, "src", "apidiff", "go.mod"), []byte(goMod), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldd := filepath.Join(dir, "src/apidiff/old")
+	newd := filepath.Join(dir, "src/apidiff/new")
 	if err := os.MkdirAll(oldd, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -69,10 +160,21 @@ func splitIntoPackages(t *testing.T, dir string) (incompatibles, compatibles []s
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() {
+		if err := oldf.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
 	newf, err := os.Create(filepath.Join(newd, "new.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() {
+		if err := newf.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 
 	wl := func(f *os.File, line string) {
 		if _, err := fmt.Fprintln(f, line); err != nil {
@@ -106,25 +208,142 @@ func splitIntoPackages(t *testing.T, dir string) (incompatibles, compatibles []s
 	return
 }
 
-func load(importPath, goPath string) (*packages.Package, error) {
+// Copied from cmd/apidiff/main.go.
+func loadModule(t *testing.T, cfg *packages.Config, modulePath string) (*Module, error) {
+	needsGoPackages(t)
+
+	cfg.Mode = cfg.Mode | packages.LoadTypes
+	loaded, err := packages.Load(cfg, fmt.Sprintf("%s/...", modulePath))
+	if err != nil {
+		return nil, err
+	}
+	if len(loaded) == 0 {
+		return nil, fmt.Errorf("found no packages for module %s", modulePath)
+	}
+	var tpkgs []*types.Package
+	var errs []error
+	for _, p := range loaded {
+		if len(p.Errors) > 0 {
+			for _, e := range p.Errors {
+				errs = append(errs, e)
+			}
+			continue
+		}
+		tpkgs = append(tpkgs, p.Types)
+	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+
+	return &Module{Path: modulePath, Packages: tpkgs}, nil
+}
+
+func loadPackage(t *testing.T, importPath, goPath string) (*packages.Package, error) {
+	needsGoPackages(t)
+
 	cfg := &packages.Config{
 		Mode: packages.LoadTypes,
 	}
 	if goPath != "" {
 		cfg.Env = append(os.Environ(), "GOPATH="+goPath)
+		cfg.Dir = filepath.Join(goPath, "src", filepath.FromSlash(importPath))
 	}
 	pkgs, err := packages.Load(cfg, importPath)
 	if err != nil {
 		return nil, err
 	}
 	if len(pkgs[0].Errors) > 0 {
-		return nil, pkgs[0].Errors[0]
+		if version.Compare(runtime.Version(), "go1.27") < 0 && hasGenericMethodSyntaxError(pkgs[0].Errors) {
+			return loadPackageWithGenericMethods(importPath, cfg.Dir)
+		}
+		return nil, joinPackageErrors(pkgs[0].Errors)
 	}
 	return pkgs[0], nil
 }
 
+func hasGenericMethodSyntaxError(errs []packages.Error) bool {
+	for _, e := range errs {
+		if strings.Contains(e.Msg, "method must have no type parameters") {
+			return true
+		}
+	}
+	return false
+}
+
+// loadPackageWithGenericMethods parses and type-checks a package containing Go 1.27
+// generic methods when running under Go 1.26, whose go/types already supports
+// generic methods once TypeParams are attached to the method's ast.FuncDecl.
+func loadPackageWithGenericMethods(importPath, dir string) (*packages.Package, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	fset := token.NewFileSet()
+	var files []*ast.File
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".go") {
+			continue
+		}
+		filename := filepath.Join(dir, entry.Name())
+		src, err := os.ReadFile(filename)
+		if err != nil {
+			return nil, err
+		}
+		f1, _ := parser.ParseFile(fset, filename, src, 0)
+		if f1 == nil {
+			return nil, fmt.Errorf("failed to parse %s", filename)
+		}
+		srcNoRecv := append([]byte(nil), src...)
+		base := fset.File(f1.Pos()).Base()
+		for _, decl := range f1.Decls {
+			if fdecl, ok := decl.(*ast.FuncDecl); ok && fdecl.Recv != nil {
+				start := int(fdecl.Recv.Pos()) - base
+				end := int(fdecl.Recv.End()) - base
+				for i := start; i < end; i++ {
+					if srcNoRecv[i] != '\n' {
+						srcNoRecv[i] = ' '
+					}
+				}
+			}
+		}
+		f2, err := parser.ParseFile(token.NewFileSet(), filename, srcNoRecv, 0)
+		if err != nil {
+			return nil, err
+		}
+		for i, decl := range f1.Decls {
+			if fdecl, ok := decl.(*ast.FuncDecl); ok && fdecl.Recv != nil {
+				fdecl.Type.TypeParams = f2.Decls[i].(*ast.FuncDecl).Type.TypeParams
+			}
+		}
+		files = append(files, f1)
+	}
+	var typeErrs []error
+	conf := types.Config{
+		Importer: importer.Default(),
+		Error: func(err error) {
+			if strings.Contains(err.Error(), "methods cannot have type parameters") {
+				return
+			}
+			typeErrs = append(typeErrs, err)
+		},
+	}
+	tpkg, _ := conf.Check(importPath, fset, files, nil)
+	if len(typeErrs) > 0 {
+		return nil, errors.Join(typeErrs...)
+	}
+	return &packages.Package{Types: tpkg}, nil
+}
+
+func joinPackageErrors(errs []packages.Error) error {
+	list := make([]error, len(errs))
+	for i := range errs {
+		list[i] = errs[i]
+	}
+	return errors.Join(list...)
+}
+
 func TestExportedFields(t *testing.T) {
-	pkg, err := load("golang.org/x/exp/apidiff/testdata/exported_fields", "")
+	pkg, err := loadPackage(t, "golang.org/x/exp/apidiff/testdata/exported_fields", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,3 +375,69 @@ func TestExportedFields(t *testing.T) {
 		}
 	}
 }
+
+// needsGoPackages skips t if the go/packages driver (or 'go' tool) implied by
+// the current process environment is not present in the path.
+//
+// Copied and adapted from golang.org/x/tools/internal/testenv.
+func needsGoPackages(t *testing.T) {
+	t.Helper()
+
+	tool := os.Getenv("GOPACKAGESDRIVER")
+	switch tool {
+	case "off":
+		// "off" forces go/packages to use the go command.
+		tool = "go"
+	case "":
+		if _, err := exec.LookPath("gopackagesdriver"); err == nil {
+			tool = "gopackagesdriver"
+		} else {
+			tool = "go"
+		}
+	}
+
+	needsTool(t, tool)
+}
+
+// needsTool skips t if the named tool is not present in the path.
+//
+// Copied and adapted from golang.org/x/tools/internal/testenv.
+func needsTool(t *testing.T, tool string) {
+	_, err := exec.LookPath(tool)
+	if err == nil {
+		return
+	}
+
+	t.Helper()
+	if allowMissingTool(tool) {
+		t.Skipf("skipping because %s tool not available: %v", tool, err)
+	} else {
+		t.Fatalf("%s tool not available: %v", tool, err)
+	}
+}
+
+func allowMissingTool(tool string) bool {
+	if runtime.GOOS == "android" {
+		// Android builds generally run tests on a separate machine from the build,
+		// so don't expect any external tools to be available.
+		return true
+	}
+
+	if tool == "go" && os.Getenv("GO_BUILDER_NAME") == "illumos-amd64-joyent" {
+		// Work around a misconfigured builder (see https://golang.org/issue/33950).
+		return true
+	}
+
+	// If a developer is actively working on this test, we expect them to have all
+	// of its dependencies installed. However, if it's just a dependency of some
+	// other module (for example, being run via 'go test all'), we should be more
+	// tolerant of unusual environments.
+	return !packageMainIsDevel()
+}
+
+// packageMainIsDevel reports whether the module containing package main
+// is a development version (if module information is available).
+//
+// Builds in GOPATH mode and builds that lack module information are assumed to
+// be development versions.
+var packageMainIsDevel = func() bool { return true }

@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// +build ignore
+//go:build ignore
 
 package main
 
@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"go/format"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"path"
@@ -39,7 +38,9 @@ const outSize = 48
 //
 // When manually debugging one particular icon, it can be useful to add
 // something like:
-// 	if baseName != "check_box" { return errSkip }
+//
+//	if baseName != "check_box" { return errSkip }
+//
 // at the top of func genFile.
 var errSkip = errors.New("skipping SVG to IconVG conversion")
 
@@ -166,7 +167,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("gofmt failed: %v\n\nGenerated code:\n%s", err, raw)
 	}
-	if err := ioutil.WriteFile("data.go", formatted, 0644); err != nil {
+	if err := os.WriteFile("data.go", formatted, 0644); err != nil {
 		log.Fatalf("WriteFile failed: %s\n", err)
 	}
 
@@ -184,7 +185,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("gofmt failed: %v\n\nGenerated code:\n%s", err, raw)
 		}
-		if err := ioutil.WriteFile("data_test.go", formatted, 0644); err != nil {
+		if err := os.WriteFile("data_test.go", formatted, 0644); err != nil {
 			log.Fatalf("WriteFile failed: %s\n", err)
 		}
 	}
@@ -326,7 +327,7 @@ var skippedFiles = map[[2]string]bool{
 
 func genFile(fqSVGDirName, dirName, baseName, fileName string, size float32) error {
 	fqFileName := filepath.Join(fqSVGDirName, fileName)
-	svgData, err := ioutil.ReadFile(fqFileName)
+	svgData, err := os.ReadFile(fqFileName)
 	if err != nil {
 		return err
 	}
@@ -569,7 +570,7 @@ func atof(s []byte) (float32, error) {
 	if err != nil {
 		return 0, fmt.Errorf("could not parse %q as a float32: %v", s, err)
 	}
-	return float32(f), err
+	return float32(f), nil
 }
 
 func normalize(args *[6]float32, n int, op byte, size float32, offset f32.Vec2, relative bool) {

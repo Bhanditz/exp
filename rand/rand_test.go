@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"testing"
 	"testing/iotest"
+	"time"
 )
 
 const (
@@ -25,13 +26,6 @@ type statsResults struct {
 	stddev      float64
 	closeEnough float64
 	maxError    float64
-}
-
-func max(a, b float64) float64 {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func nearEqual(a, b, closeEnough, maxError float64) bool {
@@ -77,7 +71,7 @@ func checkSampleDistribution(t *testing.T, samples []float64, expected *statsRes
 	actual := getStatsResults(samples)
 	err := actual.checkSimilarDistribution(expected)
 	if err != nil {
-		t.Errorf(err.Error())
+		t.Error(err)
 	}
 }
 
@@ -457,6 +451,34 @@ func TestShuffleSmall(t *testing.T) {
 	}
 }
 
+func TestPCGSourceRoundTrip(t *testing.T) {
+	var src PCGSource
+	src.Seed(uint64(time.Now().Unix()))
+
+	src.Uint64() // Step PRNG once to makes sure high and low are different.
+
+	buf, err := src.MarshalBinary()
+	if err != nil {
+		t.Errorf("unexpected error marshaling state: %v", err)
+	}
+
+	var dst PCGSource
+	// Get dst into a non-zero state.
+	dst.Seed(1)
+	for i := 0; i < 10; i++ {
+		dst.Uint64()
+	}
+
+	err = dst.UnmarshalBinary(buf)
+	if err != nil {
+		t.Errorf("unexpected error unmarshaling state: %v", err)
+	}
+
+	if dst != src {
+		t.Errorf("mismatch between generator states: got:%+v want:%+v", dst, src)
+	}
+}
+
 // Benchmarks
 
 func BenchmarkSource(b *testing.B) {
@@ -470,6 +492,14 @@ func BenchmarkInt63Threadsafe(b *testing.B) {
 	for n := b.N; n > 0; n-- {
 		Int63()
 	}
+}
+
+func BenchmarkInt63ThreadsafeParallel(b *testing.B) {
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			Int63()
+		}
+	})
 }
 
 func BenchmarkInt63Unthreadsafe(b *testing.B) {

@@ -1,3 +1,4 @@
+//go:build ignore
 // +build ignore
 
 /*
@@ -41,7 +42,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"runtime"
 	"sort"
@@ -113,7 +114,7 @@ func main() {
 			break
 		}
 	}
-	data, err := ioutil.ReadAll(in)
+	data, err := io.ReadAll(in)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ReadAll err:", err)
 		os.Exit(2)

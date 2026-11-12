@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// +build ignore
+//go:build ignore
+
 //
 // This build tag means that "go build" does not build this file. Use "go run
 // manual_test_program.go" to run it.
@@ -22,6 +23,10 @@ import (
 var garbage []byte
 
 func main() {
+	// If you replace "manual_test_program.go" with the name of an empty (zero
+	// sized) file (and set "const debug = true") then you will not necessarily
+	// see two "munmap log messages", since some operating systems will not
+	// allow a zero sized mapping so there is no need for a finalizer to unmap.
 	const filename = "manual_test_program.go"
 
 	for _, explicitClose := range []bool{false, true} {
@@ -29,6 +34,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Open: %v", err)
 		}
+		println("Open succeeded; Len =", r.Len())
 		if explicitClose {
 			r.Close()
 		} else {

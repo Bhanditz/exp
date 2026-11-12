@@ -6,7 +6,7 @@ package fmt_test
 
 import (
 	"bytes"
-	. "fmt"
+	. "golang.org/x/exp/errors/fmt"
 	"io"
 	"math"
 	"reflect"
@@ -240,10 +240,10 @@ var fmtTests = []struct {
 	{"%#q", "\U0010ffff", "`􏿿`"},
 	{"%#+q", "\U0010ffff", "`􏿿`"},
 	// Runes that are not valid.
-	{"%q", string(0x110000), `"�"`},
-	{"%+q", string(0x110000), `"\ufffd"`},
-	{"%#q", string(0x110000), "`�`"},
-	{"%#+q", string(0x110000), "`�`"},
+	{"%q", string(rune(0x110000)), `"�"`},
+	{"%+q", string(rune(0x110000)), `"\ufffd"`},
+	{"%#q", string(rune(0x110000)), "`�`"},
+	{"%#+q", string(rune(0x110000)), "`�`"},
 
 	// characters
 	{"%c", uint('x'), "x"},
@@ -1407,7 +1407,7 @@ func (flagPrinter) Format(f State, c rune) {
 	s := "%"
 	for i := 0; i < 128; i++ {
 		if f.Flag(i) {
-			s += string(i)
+			s += string(rune(i))
 		}
 	}
 	if w, ok := f.Width(); ok {
@@ -1677,9 +1677,16 @@ var panictests = []struct {
 	{"%s", PanicF{3}, "%!s(PANIC=3)"},
 }
 
+var stripMethod = strings.NewReplacer(
+	"PANIC=String method: ", "PANIC=",
+	"PANIC=GoString method: ", "PANIC=",
+	"PANIC=Format method: ", "PANIC=",
+)
+
 func TestPanics(t *testing.T) {
 	for i, tt := range panictests {
 		s := Sprintf(tt.fmt, tt.in)
+		s = stripMethod.Replace(s)
 		if s != tt.out {
 			t.Errorf("%d: %q: got %q expected %q", i, tt.fmt, s, tt.out)
 		}

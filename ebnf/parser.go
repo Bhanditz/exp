@@ -60,7 +60,7 @@ func (p *parser) parseIdentifier() *Name {
 func (p *parser) parseToken() *Token {
 	pos := p.pos
 	value := ""
-	if p.tok == scanner.String {
+	if p.tok == scanner.String || p.tok == scanner.RawString {
 		value, _ = strconv.Unquote(p.lit)
 		// Unquote may fail with an error, but only if the scanner found
 		// an illegal string in the first place. In this case the error
@@ -72,7 +72,7 @@ func (p *parser) parseToken() *Token {
 	return &Token{pos, value}
 }
 
-// ParseTerm returns nil if no term was found.
+// parseTerm returns nil if no term was found.
 func (p *parser) parseTerm() (x Expression) {
 	pos := p.pos
 
@@ -80,7 +80,7 @@ func (p *parser) parseTerm() (x Expression) {
 	case scanner.Ident:
 		x = p.parseIdentifier()
 
-	case scanner.String:
+	case scanner.String, scanner.RawString:
 		tok := p.parseToken()
 		x = tok
 		const ellipsis = '…' // U+2026, the horizontal ellipsis character
@@ -182,7 +182,6 @@ func (p *parser) parse(filename string, src io.Reader) Grammar {
 // for incorrect syntax and if a production is declared
 // more than once; the filename is used only for error
 // positions.
-//
 func Parse(filename string, src io.Reader) (Grammar, error) {
 	var p parser
 	grammar := p.parse(filename, src)

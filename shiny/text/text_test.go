@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"image"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"reflect"
 	"sort"
@@ -20,13 +19,6 @@ import (
 	"golang.org/x/image/font"
 	"golang.org/x/image/math/fixed"
 )
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
 
 func readAllText(dst []byte, f *Frame) []byte {
 	for p := f.FirstParagraph(); p != nil; p = p.Next(f) {
@@ -207,7 +199,7 @@ func TestSeek(t *testing.T) {
 func testRead(f *Frame, want string) error {
 	c := f.NewCaret()
 	defer c.Close()
-	asBytes, err := ioutil.ReadAll(c)
+	asBytes, err := io.ReadAll(c)
 	if err != nil {
 		return fmt.Errorf("ReadAll: %v", err)
 	}

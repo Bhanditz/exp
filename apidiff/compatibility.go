@@ -3,7 +3,9 @@ package apidiff
 import (
 	"fmt"
 	"go/types"
+	"maps"
 	"reflect"
+	"slices"
 )
 
 func (d *differ) checkCompatible(otn *types.TypeName, old, new types.Type) {
@@ -16,7 +18,7 @@ func (d *differ) checkCompatible(otn *types.TypeName, old, new types.Type) {
 
 	case *types.Struct:
 		if new, ok := new.(*types.Struct); ok {
-			d.checkCompatibleStruct(otn, old, new)
+			d.checkCompatibleStruct(objectWithSide{otn, false}, old, new)
 			return
 		}
 
@@ -36,21 +38,21 @@ func (d *differ) checkCompatible(otn *types.TypeName, old, new types.Type) {
 		panic("unreachable")
 
 	default:
-		d.checkCorrespondence(otn, "", old, new)
+		d.checkCorrespondence(objectWithSide{otn, false}, "", old, new)
 		return
 
 	}
 	// Here if old and new are different kinds of types.
-	d.typeChanged(otn, "", old, new)
+	d.typeChanged(objectWithSide{otn, false}, "", old, new)
 }
 
 func (d *differ) checkCompatibleChan(otn *types.TypeName, old, new *types.Chan) {
-	d.checkCorrespondence(otn, ", element type", old.Elem(), new.Elem())
+	d.checkCorrespondence(objectWithSide{otn, false}, ", element type", old.Elem(), new.Elem())
 	if old.Dir() != new.Dir() {
 		if new.Dir() == types.SendRecv {
-			d.compatible(otn, "", "removed direction")
+			d.compatible(objectWithSide{otn, false}, "", "removed direction")
 		} else {
-			d.incompatible(otn, "", "changed direction")
+			d.incompatible(objectWithSide{otn, false}, "", "changed direction")
 		}
 	}
 }
@@ -63,9 +65,9 @@ func (d *differ) checkCompatibleBasic(otn *types.TypeName, old, new *types.Basic
 		return
 	}
 	if compatibleBasics[[2]types.BasicKind{old.Kind(), new.Kind()}] {
-		d.compatible(otn, "", "changed from %s to %s", old, new)
+		d.compatible(objectWithSide{otn, false}, "", "changed from %s to %s", old, new)
 	} else {
-		d.typeChanged(otn, "", old, new)
+		d.typeChanged(objectWithSide{otn, false}, "", old, new)
 	}
 }
 
@@ -118,15 +120,15 @@ func (d *differ) checkCompatibleInterface(otn *types.TypeName, old, new *types.I
 		// Perform an equivalence check, but with more information.
 		d.checkMethodSet(otn, old, new, additionsIncompatible)
 		if u := unexportedMethod(new); u != nil {
-			d.incompatible(otn, u.Name(), "added unexported method")
+			d.incompatible(objectWithSide{otn, false}, u.Name(), "added unexported method")
 		}
 	}
 }
 
 // Return an unexported method from the method set of t, or nil if there are none.
 func unexportedMethod(t *types.Interface) *types.Func {
-	for i := 0; i < t.NumMethods(); i++ {
-		if m := t.Method(i); !m.Exported() {
+	for m := range t.Methods() {
+		if !m.Exported() {
 			return m
 		}
 	}
@@ -134,20 +136,23 @@ func unexportedMethod(t *types.Interface) *types.Func {
 }
 
 // We need to check three things for structs:
-// 1. The set of exported fields must be compatible. This ensures that keyed struct
-//    literals continue to compile. (There is no compatibility guarantee for unkeyed
-//    struct literals.)
-// 2. The set of exported *selectable* fields must be compatible. This includes the exported
-//    fields of all embedded structs. This ensures that selections continue to compile.
-// 3. If the old struct is comparable, so must the new one be. This ensures that equality
-//    expressions and uses of struct values as map keys continue to compile.
+//
+//  1. The set of exported fields must be compatible. This ensures that keyed struct
+//     literals continue to compile. (There is no compatibility guarantee for unkeyed
+//     struct literals.)
+//
+//  2. The set of exported *selectable* fields must be compatible. This includes the exported
+//     fields of all embedded structs. This ensures that selections continue to compile.
+//
+//  3. If the old struct is comparable, so must the new one be. This ensures that equality
+//     expressions and uses of struct values as map keys continue to compile.
 //
 // An unexported embedded struct can't appear in a struct literal outside the
 // package, so it doesn't have to be present, or have the same name, in the new
 // struct.
 //
 // Field tags are ignored: they have no compile-time implications.
-func (d *differ) checkCompatibleStruct(obj types.Object, old, new *types.Struct) {
+func (d *differ) checkCompatibleStruct(obj objectWithSide, old, new *types.Struct) {
 	d.checkCompatibleObjectSets(obj, exportedFields(old), exportedFields(new))
 	d.checkCompatibleObjectSets(obj, exportedSelectableFields(old), exportedSelectableFields(new))
 	// Removing comparability from a struct is an incompatible change.
@@ -160,8 +165,7 @@ func (d *differ) checkCompatibleStruct(obj types.Object, old, new *types.Struct)
 // This is also the set of exported keys for keyed struct literals.
 func exportedFields(s *types.Struct) map[string]types.Object {
 	m := map[string]types.Object{}
-	for i := 0; i < s.NumFields(); i++ {
-		f := s.Field(i)
+	for f := range s.Fields() {
 		if f.Exported() {
 			m[f.Name()] = f
 		}
@@ -185,7 +189,9 @@ func exportedSelectableFields(s *types.Struct) map[string]types.Object {
 		// We only want to consider unambiguous fields. Ambiguous fields (where there
 		// is more than one field of the same name at the same level) are legal, but
 		// cannot be selected.
-		for name, f := range unambiguousFields(cur) {
+		uf := unambiguousFields(cur)
+		for _, name := range slices.Sorted(maps.Keys(uf)) {
+			f := uf[name]
 			// Record an exported field we haven't seen before. If we have seen it,
 			// it occurred a lower depth, so it shadows this field.
 			if f.Exported() && m[name] == nil {
@@ -223,8 +229,8 @@ func unambiguousFields(structs []*types.Struct) map[string]*types.Var {
 	fields := map[string]*types.Var{}
 	seen := map[string]bool{}
 	for _, s := range structs {
-		for i := 0; i < s.NumFields(); i++ {
-			f := s.Field(i)
+		for f := range s.Fields() {
+			f := f
 			name := f.Name()
 			if seen[name] {
 				delete(fields, name)
@@ -239,8 +245,9 @@ func unambiguousFields(structs []*types.Struct) map[string]*types.Var {
 
 // Anything removed or change from the old set is an incompatible change.
 // Anything added to the new set is a compatible change.
-func (d *differ) checkCompatibleObjectSets(obj types.Object, old, new map[string]types.Object) {
-	for name, oldo := range old {
+func (d *differ) checkCompatibleObjectSets(obj objectWithSide, old, new map[string]types.Object) {
+	for _, name := range slices.Sorted(maps.Keys(old)) {
+		oldo := old[name]
 		newo := new[name]
 		if newo == nil {
 			d.incompatible(obj, name, "removed")
@@ -248,7 +255,7 @@ func (d *differ) checkCompatibleObjectSets(obj types.Object, old, new map[string
 			d.checkCorrespondence(obj, name, oldo.Type(), newo.Type())
 		}
 	}
-	for name := range new {
+	for _, name := range slices.Sorted(maps.Keys(new)) {
 		if old[name] == nil {
 			d.compatible(obj, name, "added")
 		}
@@ -286,7 +293,8 @@ func (d *differ) checkMethodSet(otn *types.TypeName, oldt, newt types.Type, addc
 	if _, ok := oldt.(*types.Pointer); ok {
 		msname = "*" + msname
 	}
-	for name, oldMethod := range oldMethodSet {
+	for _, name := range slices.Sorted(maps.Keys(oldMethodSet)) {
+		oldMethod := oldMethodSet[name]
 		newMethod := newMethodSet[name]
 		if newMethod == nil {
 			var part string
@@ -299,29 +307,35 @@ func (d *differ) checkMethodSet(otn *types.TypeName, oldt, newt types.Type, addc
 			// object. So use the part string to distinguish them.
 			if receiverNamedType(oldMethod).Obj() != otn {
 				part = fmt.Sprintf(", method set of %s", msname)
+				// The same embedded method removal appears in both the value and
+				// pointer method sets. Report it only once, from the pointer check.
+				if _, ok := oldt.(*types.Pointer); !ok {
+					continue
+				}
 			}
-			d.incompatible(oldMethod, part, "removed")
+			d.incompatible(objectWithSide{oldMethod, false}, part, "removed")
 		} else {
-			obj := oldMethod
+			obj := objectWithSide{oldMethod, false}
 			// If a value method is changed to a pointer method and has a signature
 			// change, then we can get two messages for the same method definition: one
 			// for the value method set that says it's removed, and another for the
 			// pointer method set that says it changed. To keep both messages (since
 			// messageSet dedups), use newMethod for the second. (Slight hack.)
 			if !hasPointerReceiver(oldMethod) && hasPointerReceiver(newMethod) {
-				obj = newMethod
+				obj = objectWithSide{newMethod, true}
 			}
 			d.checkCorrespondence(obj, "", oldMethod.Type(), newMethod.Type())
 		}
 	}
 
 	// Check for added methods.
-	for name, newMethod := range newMethodSet {
+	for _, name := range slices.Sorted(maps.Keys(newMethodSet)) {
+		newMethod := newMethodSet[name]
 		if oldMethodSet[name] == nil {
 			if addcompat {
-				d.compatible(newMethod, "", "added")
+				d.compatible(objectWithSide{newMethod, true}, "", "added")
 			} else {
-				d.incompatible(newMethod, "", "added")
+				d.incompatible(objectWithSide{newMethod, true}, "", "added")
 			}
 		}
 	}
@@ -331,8 +345,8 @@ func (d *differ) checkMethodSet(otn *types.TypeName, oldt, newt types.Type, addc
 func exportedMethods(t types.Type) map[string]types.Object {
 	m := map[string]types.Object{}
 	ms := types.NewMethodSet(t)
-	for i := 0; i < ms.Len(); i++ {
-		obj := ms.At(i).Obj()
+	for method := range ms.Methods() {
+		obj := method.Obj()
 		if obj.Exported() {
 			m[obj.Name()] = obj
 		}
@@ -341,13 +355,13 @@ func exportedMethods(t types.Type) map[string]types.Object {
 }
 
 func receiverType(method types.Object) types.Type {
-	return method.Type().(*types.Signature).Recv().Type()
+	return method.(*types.Func).Signature().Recv().Type()
 }
 
 func receiverNamedType(method types.Object) *types.Named {
-	switch t := receiverType(method).(type) {
+	switch t := types.Unalias(receiverType(method)).(type) {
 	case *types.Pointer:
-		return t.Elem().(*types.Named)
+		return types.Unalias(t.Elem()).(*types.Named)
 	case *types.Named:
 		return t
 	default:
@@ -356,6 +370,6 @@ func receiverNamedType(method types.Object) *types.Named {
 }
 
 func hasPointerReceiver(method types.Object) bool {
-	_, ok := receiverType(method).(*types.Pointer)
+	_, ok := types.Unalias(receiverType(method)).(*types.Pointer)
 	return ok
 }

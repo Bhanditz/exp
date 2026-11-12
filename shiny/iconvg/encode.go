@@ -34,6 +34,9 @@ const (
 // The zero value is usable. Calling Reset, which is optional, sets the
 // Metadata for the subsequent encoded form. If Reset is not called before
 // other Encoder methods, the default metadata is implied.
+//
+// It aims to emit byte-identical Bytes output for the same input, independent
+// of the platform (and specifically its floating-point hardware).
 type Encoder struct {
 	// HighResolutionCoordinates is whether the encoder should encode
 	// coordinate numbers for subsequent paths at the best possible resolution
@@ -230,7 +233,7 @@ func (e *Encoder) SetCReg(adj uint8, incr bool, c Color) {
 	if e.err != nil {
 		return
 	}
-	if adj < 0 || 6 < adj {
+	if adj > 6 {
 		e.err = errInvalidSelectorAdjustment
 		return
 	}
@@ -269,7 +272,7 @@ func (e *Encoder) SetNReg(adj uint8, incr bool, f float32) {
 	if e.err != nil {
 		return
 	}
-	if adj < 0 || 6 < adj {
+	if adj > 6 {
 		e.err = errInvalidSelectorAdjustment
 		return
 	}
@@ -410,16 +413,21 @@ func (e *Encoder) SetCircularGradient(cBase, nBase uint8, cx, cy, rx, ry float32
 // axis vectors (rx, ry) and (sx, sy) such that (cx+rx, cy+ry) and (cx+sx,
 // cy+sy) are on the ellipse.
 func (e *Encoder) SetEllipticalGradient(cBase, nBase uint8, cx, cy, rx, ry, sx, sy float32, spread GradientSpread, stops []GradientStop) {
+	// Explicitly disable FMA in the floating-point calculations below
+	// to get consistent results on all platforms, and in turn produce
+	// a byte-identical encoding.
+	// See https://golang.org/ref/spec#Floating_point_operators and issue 43219.
+
 	// See the package documentation's appendix for a derivation of the
 	// transformation matrix.
-	invRSSR := 1 / (rx*sy - sx*ry)
+	invRSSR := 1 / (float32(rx*sy) - float32(sx*ry))
 
 	ma := +sy * invRSSR
 	mb := -sx * invRSSR
-	mc := -ma*cx - mb*cy
+	mc := -float32(ma*cx) - float32(mb*cy)
 	md := -ry * invRSSR
 	me := +rx * invRSSR
-	mf := -md*cx - me*cy
+	mf := -float32(md*cx) - float32(me*cy)
 
 	e.SetGradient(cBase, nBase, true, f32.Aff3{
 		ma, mb, mc,
@@ -432,14 +440,14 @@ func (e *Encoder) StartPath(adj uint8, x, y float32) {
 	if e.err != nil {
 		return
 	}
-	if adj < 0 || 6 < adj {
+	if adj > 6 {
 		e.err = errInvalidSelectorAdjustment
 		return
 	}
 	e.highResolutionCoordinates = e.HighResolutionCoordinates
 	e.buf = append(e.buf, uint8(0xc0+adj))
-	e.buf.encodeCoordinate(e.quantize(x))
-	e.buf.encodeCoordinate(e.quantize(y))
+	e.buf.encodeCoordinate(quantize(x, e.highResolutionCoordinates))
+	e.buf.encodeCoordinate(quantize(y, e.highResolutionCoordinates))
 	e.mode = modeDrawing
 }
 
@@ -535,17 +543,17 @@ func (e *Encoder) flushDrawOps() {
 			switch e.drawOp {
 			default:
 				for j := m * int(op.nArgs); j > 0; j-- {
-					e.buf.encodeCoordinate(e.quantize(e.drawArgs[i]))
+					e.buf.encodeCoordinate(quantize(e.drawArgs[i], e.highResolutionCoordinates))
 					i++
 				}
 			case 'A', 'a':
 				for j := m; j > 0; j-- {
-					e.buf.encodeCoordinate(e.quantize(e.drawArgs[i+0]))
-					e.buf.encodeCoordinate(e.quantize(e.drawArgs[i+1]))
+					e.buf.encodeCoordinate(quantize(e.drawArgs[i+0], e.highResolutionCoordinates))
+					e.buf.encodeCoordinate(quantize(e.drawArgs[i+1], e.highResolutionCoordinates))
 					e.buf.encodeAngle(e.drawArgs[i+2])
 					e.buf.encodeNatural(uint32(e.drawArgs[i+3]))
-					e.buf.encodeCoordinate(e.quantize(e.drawArgs[i+4]))
-					e.buf.encodeCoordinate(e.quantize(e.drawArgs[i+5]))
+					e.buf.encodeCoordinate(quantize(e.drawArgs[i+4], e.highResolutionCoordinates))
+					e.buf.encodeCoordinate(quantize(e.drawArgs[i+5], e.highResolutionCoordinates))
 					i += 6
 				}
 			}
@@ -558,8 +566,8 @@ func (e *Encoder) flushDrawOps() {
 	e.drawArgs = e.drawArgs[:0]
 }
 
-func (e *Encoder) quantize(coord float32) float32 {
-	if !e.highResolutionCoordinates && (-128 <= coord && coord < 128) {
+func quantize(coord float32, highResolutionCoordinates bool) float32 {
+	if !highResolutionCoordinates && (-128 <= coord && coord < 128) {
 		x := math.Floor(float64(coord*64 + 0.5))
 		return float32(x) / 64
 	}

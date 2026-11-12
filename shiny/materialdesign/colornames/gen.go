@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// +build ignore
+//go:build ignore
 
 // This program generates table.go from
 // https://material.google.com/style/color.html
@@ -14,7 +14,6 @@ import (
 	"go/format"
 	"image/color"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"strings"
@@ -173,7 +172,7 @@ func main() {
 		log.Fatalf("Error while formatting code: %s\n", err)
 	}
 
-	if err := ioutil.WriteFile("table.go", fmted, 0644); err != nil {
+	if err := os.WriteFile("table.go", fmted, 0644); err != nil {
 		log.Fatalf("Error writing table.go: %s\n", err)
 	}
 }

@@ -104,7 +104,9 @@ const (
 // Diagramatically, suppose we have two adjacent boxes (shown by square
 // brackets below), with the Caret (an integer location called Caret.pos in the
 // Frame's text) in the middle of the "foo2bar3" word:
+//
 //	[foo0 foo1 foo2]^[bar3 bar4 bar5]
+//
 // leanForwards moves Caret.k from fooBox.j to barBox.i, also updating the
 // Caret's p, l and b. Caret.pos remains unchanged.
 func (c *Caret) leanForwards() leanResult {
@@ -600,10 +602,7 @@ func layout(f *Frame, l int32) {
 			if r == ' ' {
 				breakPoint = reader.bAndK()
 			}
-			a, ok := f.face.GlyphAdvance(r)
-			if !ok {
-				panic("TODO: is falling back on the U+FFFD glyph the responsibility of the caller or the Face?")
-			}
+			a, _ := f.face.GlyphAdvance(r)
 			advance += a
 			if r != ' ' && advance > f.maxWidth && breakPoint.b != 0 {
 				breakLine(f, l, breakPoint.b, breakPoint.k)

@@ -6,46 +6,53 @@ package iconvg
 
 import (
 	"bytes"
+	"flag"
 	"image/color"
-	"io/ioutil"
 	"math"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
 
 	"golang.org/x/image/math/f32"
 )
 
-// overwriteTestdataFiles is temporarily set to true when adding new
-// testdataTestCases.
-const overwriteTestdataFiles = false
-
-// TestOverwriteTestdataFilesIsFalse tests that any change to
-// overwriteTestdataFiles is only temporary. Programmers are assumed to run "go
-// test" before sending out for code review or committing code.
-func TestOverwriteTestdataFilesIsFalse(t *testing.T) {
-	if overwriteTestdataFiles {
-		t.Errorf("overwriteTestdataFiles is true; do not commit code changes")
-	}
-}
+// updateFlag controls whether to overwrite testdata files during tests.
+// This can be useful when adding new testdataTestCases.
+var updateFlag = flag.Bool("update", false, "Overwrite testdata files.")
 
 func testEncode(t *testing.T, e *Encoder, wantFilename string) {
 	got, err := e.Bytes()
 	if err != nil {
 		t.Fatalf("encoding: %v", err)
 	}
-	if overwriteTestdataFiles {
-		if err := ioutil.WriteFile(filepath.FromSlash(wantFilename), got, 0666); err != nil {
+	if *updateFlag {
+		if err := os.WriteFile(filepath.FromSlash(wantFilename), got, 0666); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
 		return
 	}
-	want, err := ioutil.ReadFile(filepath.FromSlash(wantFilename))
+	want, err := os.ReadFile(filepath.FromSlash(wantFilename))
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
 	if !bytes.Equal(got, want) {
-		t.Fatalf("\ngot  %d bytes:\n% x\nwant %d bytes:\n% x", len(got), got, len(want), want)
+		// The IconVG encoder is expected to be completely deterministic across all
+		// platforms and Go compilers, so check that we get exactly the right bytes.
+		//
+		// If we get slightly different bytes on some supported platform (for example,
+		// a new GOOS/GOARCH port, or a different but spec-compliant Go compiler) due
+		// to non-determinism in floating-point math, the encoder needs to be fixed.
+		//
+		// See golang.org/issue/43219#issuecomment-748531069.
+		t.Errorf("\ngot  %d bytes (on GOOS=%s GOARCH=%s, using compiler %q):\n% x\nwant %d bytes:\n% x",
+			len(got), runtime.GOOS, runtime.GOARCH, runtime.Compiler, got, len(want), want)
+		gotDisasm, err1 := disassemble(got)
+		wantDisasm, err2 := disassemble(want)
+		if err1 == nil && err2 == nil {
+			diffLines(t, string(gotDisasm), string(wantDisasm))
+		}
 	}
 }
 
@@ -144,7 +151,7 @@ var cowbellGradients = []struct {
 
 	stops []GradientStop
 }{{
-// The 0th element is unused.
+	// The 0th element is unused.
 }, {
 	radial: true,
 	cx:     -102.14,
